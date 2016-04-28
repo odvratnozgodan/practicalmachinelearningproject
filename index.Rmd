@@ -1,0 +1,171 @@
+---
+title: "Quantification of excercise quality"
+author: "Bruno Blazinc"
+date: "28 Apr 2016"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r echo = FALSE,results='hide'}
+if (!require("dplyr")) install.packages("dplyr")
+if (!require("doParallel")) install.packages("doParallel")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("caret")) install.packages("caret")
+if (!require("doMC")) install.packages("doMC")
+
+suppressPackageStartupMessages(library(dplyr))
+suppressPackageStartupMessages(library(doParallel))
+suppressPackageStartupMessages(library(ggplot2))
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(doMC))
+```
+
+
+## Summary
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity but the users usually use the fitness trackers to quantify how much of a certain exercise they do, but rarely how well they performed the exercise. In this document we will try to answer that question by training_data a model that can quantify the quality of a certain exercise or activity. For this purpose we will use the data obtained from [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har). The data set consists of data for 6 subjects, collected from 4 accelerometers on the belt, forearm, arm, and dumbbell. The subjects were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A represents the correct way to perform the exercise and the other four common mistakes.
+
+
+## Reading the data and preprocessing
+First we download the training_data and test data from following links and read it into two dataframes.
+
+* training_data data[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training_data.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training_data.csv)
+* Test data[https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv](https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv)
+
+```{r echo = FALSE, cache=TRUE}
+if(!file.exists("./pml-training.csv")){
+    fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+    download.file(fileUrl, destfile="./pml-training.csv", method="curl")  
+}
+
+if(!file.exists("./pml-testing.csv")){
+    fileUrl <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+    download.file(fileUrl, destfile="./pml-testing.csv", method="curl")  
+}
+
+training_data <- read.csv("./pml-training.csv", na.strings = c("#DIV/0!", "", "NA"))
+submission_data <- read.csv("./pml-testing.csv", na.strings = c("#DIV/0!", "", "NA"))
+
+```
+
+The data has features without any data except where the feature ```new_window=="yes"``` so first we will filter only observations where the value is ```new_window=="no"```. The ```new_window``` has 19210 ```no``` and 406 ```yes``` observations, so it's safe to assume we can remove observations where the value is ```yes```. Next we remove the features where all the values are NA, and remove the features we won't need(eg. ordinal number, date, etc.). After cleaning up the data we will check if there remain any variables with near zero variance with the method ```nearZeroVar()```.
+
+```{r echo = FALSE, cache=TRUE}
+summary(training_data$new_window)
+
+# Remove the new_window because it's sparse and some features have values only on that observation
+training_data <- training_data %>% filter(new_window == "no")
+
+# This feature has no variablility so we will remove it
+training_data$new_window <- NULL
+submission_data$new_window <- NULL
+
+# Removing columns with all values NA
+training_data <- training_data[colSums(!is.na(training_data)) > 0]
+submission_data <- submission_data[colSums(!is.na(submission_data)) > 0]
+
+# Probably should remove timestamps, as were not going to model the data as poisson or time-series
+training_data$X <- NULL
+submission_data$X <- NULL
+training_data$cvtd_timestamp <- NULL
+submission_data$cvtd_timestamp <- NULL
+training_data$raw_timestamp_part_1 <- NULL
+submission_data$raw_timestamp_part_1 <- NULL
+training_data$raw_timestamp_part_2 <- NULL
+submission_data$raw_timestamp_part_2 <- NULL
+
+
+
+# Check to see which columns in the testing dataset are NOT present in the training_data dataset
+test_extras <- colnames(submission_data)[which(colnames(submission_data) %in% colnames(training_data)==FALSE)]
+submission_data <- submission_data[ , !(names(submission_data) %in% test_extras)]
+
+train_extras <- colnames(training_data)[which(colnames(training_data) %in% colnames(submission_data)==FALSE)]
+training_data <- training_data[ , !(names(training_data) %in% train_extras[-which(train_extras=="classe")])]
+
+nearZeroVar(training_data)
+```
+
+## Model building
+First the ```training_data``` is split in 3 parts, 70% for training, 15% for validation and 15% for testing. We will train 3 types of models each with and without preprocessing, so we can see the benefit of the preprocessing. Next we will train a classification tree(```rpart```), a general boosted model(```gbm```), and random forest(```rf```), and  for preprocessing we will ```center``` and ```scale``` the data. For the train control we will use the 10-fold cross-validation.
+
+```{r echo = FALSE, cache=TRUE}
+# Spliting of data into training validation and testing set
+set.seed(33833)
+
+inTrain = createDataPartition(training_data$classe, p = 0.7, list = FALSE)
+training <- training_data[inTrain,]
+validation_data <- training_data[-inTrain,]
+inValidation = createDataPartition(validation_data$classe, p = 0.5, list = FALSE)
+validation <- validation_data[inValidation,]
+testing <- validation_data[-inValidation,]
+
+registerDoMC(cores = detectCores())
+
+tControl <- trainControl(method='cv', number=10, returnResamp='none')
+
+methods <- list("rpart", "gbm", "rf", "rpart", "gbm", "rf")
+preprocess <- list(NULL, NULL, NULL, c("center", "scale"), c("center", "scale"), c("center", "scale"))
+accuracies <- data.frame(methods=matrix(unlist(methods), nrow=length(methods), byrow=T), preprocess=matrix(), accuracy=matrix())
+if(!is.null(unlist(preprocess))){
+    accuracies$preprocess <- lapply(preprocess, paste)    
+}
+
+pred_validation <- data.frame(model1=validation$classe)
+pred_test <- data.frame(model1=validation$classe[1:nrow(testing)])
+pred_submission <- data.frame(model1=validation$classe[1:nrow(submission_data)])
+
+for (i in 1:length(methods)) {
+    if(methods[[i]]=="gbm"){
+        model <- train(classe~., training, method=methods[[i]], preProcess=preprocess[[i]], trControl=tControl, verbose=FALSE)        
+    }else{
+        model <- train(classe~., training, method=methods[[i]], preProcess=preprocess[[i]], trControl=tControl)
+    }
+    pred_validation[paste("model", i, sep = "")] <- predict(model, newdata = validation)
+    pred_test[paste("model", i, sep = "")] <- predict(model, newdata = testing)
+    pred_submission[paste("model", i, sep = "")] <- predict(model, newdata = submission_data)
+    accuracies$accuracy[i] <- confusionMatrix(validation$classe, pred_validation[[paste("model", i, sep = "")]])$overall[1]
+}
+
+accuracies
+```
+
+Now we can look at the accuracies of each model. Take note that all the model pairs(with and without preprocessing) have the same accuracy. That is because we used the type of models that handle non-normal distributions pretty well. The worst accuracy is from the ```rpart``` model 0.516, followed by the ```gbm``` model with an accuracy of 0.988, and finally the ```rf``` model with an accuracy of 0.998 . The accuracies are calculated on the validation data set. We will proceed by aggregating the results of the models and training an ensemble model with them. For the ensemble model we chose a general boosted model.
+
+```{r echo = FALSE, cache=TRUE}
+bind_cols(validation, pred_validation)
+bind_cols(testing, pred_test)
+bind_cols(submission_data, pred_submission)
+
+pred_validation$classe <- validation$classe
+pred_test$classe <- testing$classe
+pred_submission$classe <- submission_data$classe
+
+# Fit a model that combines all models
+#train a new model on the predictions
+tControl_ensemble <- trainControl(method='cv', number=3, returnResamp='none')
+fit_ensemble <- train(classe~., data=pred_validation, method='gbm', trControl=tControl_ensemble, verbose=FALSE)
+pred_ensamble <- predict(fit_ensemble,pred_test)
+pred_ensamble_submission <- predict(fit_ensemble,pred_submission)
+
+accuracy <- confusionMatrix(pred_test$classe, pred_ensamble)$overall[1]
+
+rmse <- RMSE(as.numeric(pred_ensamble), as.numeric(pred_test$classe))
+
+pred_ensamble_submission
+```
+
+## Results and conclusion
+After training the ensemble we calculate it's accuracy and RMSE on the test data set. The accuracy is 0.997 and RMSE is 0.045. That is quite good, though the standalone ```rf``` model has a marginally higher accuracy, but that is expected when using model ensembles.
+The conclusion is that this model is quite good at predicting when the exercise was performed correctly or incorecctly.
+
+
+
+
+
+
+
+
+
+
+
