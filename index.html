@@ -116,27 +116,6 @@ $(document).ready(function () {
 </div>
 
 
-<pre><code>## Loading required package: dplyr
-## 
-## Attaching package: 'dplyr'
-## 
-## The following objects are masked from 'package:stats':
-## 
-##     filter, lag
-## 
-## The following objects are masked from 'package:base':
-## 
-##     intersect, setdiff, setequal, union
-## 
-## Loading required package: doParallel
-## Loading required package: foreach
-## Loading required package: iterators
-## Loading required package: parallel
-## Loading required package: ggplot2</code></pre>
-<pre><code>## Warning: package 'ggplot2' was built under R version 3.2.4</code></pre>
-<pre><code>## Loading required package: caret
-## Loading required package: lattice
-## Loading required package: doMC</code></pre>
 <div id="summary" class="section level2">
 <h2>Summary</h2>
 <p>Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity but the users usually use the fitness trackers to quantify how much of a certain exercise they do, but rarely how well they performed the exercise. In this document we will try to answer that question by training_data a model that can quantify the quality of a certain exercise or activity. For this purpose we will use the data obtained from <a href="http://groupware.les.inf.puc-rio.br/har" class="uri">http://groupware.les.inf.puc-rio.br/har</a>. The data set consists of data for 6 subjects, collected from 4 accelerometers on the belt, forearm, arm, and dumbbell. The subjects were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Class A represents the correct way to perform the exercise and the other four common mistakes.</p>
@@ -149,52 +128,83 @@ $(document).ready(function () {
 <li>Test data<a href="https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv" class="uri">https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv</a></li>
 </ul>
 <p>The data has features without any data except where the feature <code>new_window==&quot;yes&quot;</code> so first we will filter only observations where the value is <code>new_window==&quot;no&quot;</code>. The <code>new_window</code> has 19210 <code>no</code> and 406 <code>yes</code> observations, so it’s safe to assume we can remove observations where the value is <code>yes</code>. Next we remove the features where all the values are NA, and remove the features we won’t need(eg. ordinal number, date, etc.). After cleaning up the data we will check if there remain any variables with near zero variance with the method <code>nearZeroVar()</code>.</p>
+<pre class="r"><code>summary(training_data$new_window)</code></pre>
 <pre><code>##    no   yes 
 ## 19216   406</code></pre>
+<pre class="r"><code># Remove the new_window because it's sparse and some features have values only on that observation
+training_data &lt;- training_data %&gt;% filter(new_window == &quot;no&quot;)
+
+# This feature has no variablility so we will remove it
+training_data$new_window &lt;- NULL
+submission_data$new_window &lt;- NULL
+
+# Removing columns with all values NA
+training_data &lt;- training_data[colSums(!is.na(training_data)) &gt; 0]
+submission_data &lt;- submission_data[colSums(!is.na(submission_data)) &gt; 0]
+
+# Probably should remove timestamps, as were not going to model the data as poisson or time-series
+training_data$X &lt;- NULL
+submission_data$X &lt;- NULL
+training_data$cvtd_timestamp &lt;- NULL
+submission_data$cvtd_timestamp &lt;- NULL
+training_data$raw_timestamp_part_1 &lt;- NULL
+submission_data$raw_timestamp_part_1 &lt;- NULL
+training_data$raw_timestamp_part_2 &lt;- NULL
+submission_data$raw_timestamp_part_2 &lt;- NULL
+
+
+
+# Check to see which columns in the testing dataset are NOT present in the training_data dataset
+test_extras &lt;- colnames(submission_data)[which(colnames(submission_data) %in% colnames(training_data)==FALSE)]
+submission_data &lt;- submission_data[ , !(names(submission_data) %in% test_extras)]
+
+train_extras &lt;- colnames(training_data)[which(colnames(training_data) %in% colnames(submission_data)==FALSE)]
+training_data &lt;- training_data[ , !(names(training_data) %in% train_extras[-which(train_extras==&quot;classe&quot;)])]
+
+nearZeroVar(training_data)</code></pre>
 <pre><code>## integer(0)</code></pre>
 </div>
 <div id="model-building" class="section level2">
 <h2>Model building</h2>
 <p>First the <code>training_data</code> is split in 3 parts, 70% for training, 15% for validation and 15% for testing. We will train 3 types of models each with and without preprocessing, so we can see the benefit of the preprocessing. Next we will train a classification tree(<code>rpart</code>), a general boosted model(<code>gbm</code>), and random forest(<code>rf</code>), and for preprocessing we will <code>center</code> and <code>scale</code> the data. For the train control we will use the 10-fold cross-validation.</p>
-<pre><code>## Loading required package: rpart
-## Loading required package: gbm
-## Loading required package: survival
-## 
-## Attaching package: 'survival'
-## 
-## The following object is masked from 'package:caret':
-## 
-##     cluster
-## 
-## Loading required package: splines
-## Loaded gbm 2.1.1
-## Loading required package: plyr
-## -------------------------------------------------------------------------
-## You have loaded plyr after dplyr - this is likely to cause problems.
-## If you need functions from both plyr and dplyr, please load plyr first, then dplyr:
-## library(plyr); library(dplyr)
-## -------------------------------------------------------------------------
-## 
-## Attaching package: 'plyr'
-## 
-## The following objects are masked from 'package:dplyr':
-## 
-##     arrange, count, desc, failwith, id, mutate, rename, summarise,
-##     summarize
-## 
-## Loading required package: randomForest
-## randomForest 4.6-12
-## Type rfNews() to see new features/changes/bug fixes.
-## 
-## Attaching package: 'randomForest'
-## 
-## The following object is masked from 'package:ggplot2':
-## 
-##     margin
-## 
-## The following object is masked from 'package:dplyr':
-## 
-##     combine</code></pre>
+<pre class="r"><code># Spliting of data into training validation and testing set
+set.seed(33833)
+
+inTrain = createDataPartition(training_data$classe, p = 0.7, list = FALSE)
+training &lt;- training_data[inTrain,]
+validation_data &lt;- training_data[-inTrain,]
+inValidation = createDataPartition(validation_data$classe, p = 0.5, list = FALSE)
+validation &lt;- validation_data[inValidation,]
+testing &lt;- validation_data[-inValidation,]
+
+registerDoMC(cores = detectCores())
+
+tControl &lt;- trainControl(method='cv', number=10, returnResamp='none')
+
+methods &lt;- list(&quot;rpart&quot;, &quot;gbm&quot;, &quot;rf&quot;, &quot;rpart&quot;, &quot;gbm&quot;, &quot;rf&quot;)
+preprocess &lt;- list(NULL, NULL, NULL, c(&quot;center&quot;, &quot;scale&quot;), c(&quot;center&quot;, &quot;scale&quot;), c(&quot;center&quot;, &quot;scale&quot;))
+accuracies &lt;- data.frame(methods=matrix(unlist(methods), nrow=length(methods), byrow=T), preprocess=matrix(), accuracy=matrix())
+if(!is.null(unlist(preprocess))){
+    accuracies$preprocess &lt;- lapply(preprocess, paste)    
+}
+
+pred_validation &lt;- data.frame(model1=validation$classe)
+pred_test &lt;- data.frame(model1=validation$classe[1:nrow(testing)])
+pred_submission &lt;- data.frame(model1=validation$classe[1:nrow(submission_data)])
+
+for (i in 1:length(methods)) {
+    if(methods[[i]]==&quot;gbm&quot;){
+        model &lt;- train(classe~., training, method=methods[[i]], preProcess=preprocess[[i]], trControl=tControl, verbose=FALSE)        
+    }else{
+        model &lt;- train(classe~., training, method=methods[[i]], preProcess=preprocess[[i]], trControl=tControl)
+    }
+    pred_validation[paste(&quot;model&quot;, i, sep = &quot;&quot;)] &lt;- predict(model, newdata = validation)
+    pred_test[paste(&quot;model&quot;, i, sep = &quot;&quot;)] &lt;- predict(model, newdata = testing)
+    pred_submission[paste(&quot;model&quot;, i, sep = &quot;&quot;)] &lt;- predict(model, newdata = submission_data)
+    accuracies$accuracy[i] &lt;- confusionMatrix(validation$classe, pred_validation[[paste(&quot;model&quot;, i, sep = &quot;&quot;)]])$overall[1]
+}
+
+accuracies</code></pre>
 <pre><code>##   methods    preprocess  accuracy
 ## 1   rpart               0.5168228
 ## 2     gbm               0.9857787
@@ -203,121 +213,30 @@ $(document).ready(function () {
 ## 5     gbm center, scale 0.9885536
 ## 6      rf center, scale 0.9975720</code></pre>
 <p>Now we can look at the accuracies of each model. Take note that all the model pairs(with and without preprocessing) have the same accuracy. That is because we used the type of models that handle non-normal distributions pretty well. The worst accuracy is from the <code>rpart</code> model 0.516, followed by the <code>gbm</code> model with an accuracy of 0.988, and finally the <code>rf</code> model with an accuracy of 0.998 . The accuracies are calculated on the validation data set. We will proceed by aggregating the results of the models and training an ensemble model with them. For the ensemble model we chose a general boosted model.</p>
-<pre><code>## Source: local data frame [2,883 x 61]
-## 
-##    user_name num_window roll_belt pitch_belt yaw_belt total_accel_belt
-##       (fctr)      (int)     (dbl)      (dbl)    (dbl)            (int)
-## 1   carlitos         11      1.41       8.07    -94.4                3
-## 2   carlitos         12      1.45       8.06    -94.4                3
-## 3   carlitos         12      1.45       8.17    -94.4                3
-## 4   carlitos         13      1.44       8.18    -94.3                3
-## 5   carlitos         13      1.34       8.05    -94.3                3
-## 6   carlitos         13      1.30       7.85    -94.2                3
-## 7   carlitos         14      1.26       7.54    -94.1                3
-## 8   carlitos         14      1.26       7.47    -94.2                3
-## 9   carlitos         14      1.27       7.46    -94.1                3
-## 10  carlitos         14      1.27       7.35    -94.1                3
-## ..       ...        ...       ...        ...      ...              ...
-## Variables not shown: gyros_belt_x (dbl), gyros_belt_y (dbl), gyros_belt_z
-##   (dbl), accel_belt_x (int), accel_belt_y (int), accel_belt_z (int),
-##   magnet_belt_x (int), magnet_belt_y (int), magnet_belt_z (int), roll_arm
-##   (dbl), pitch_arm (dbl), yaw_arm (dbl), total_accel_arm (int),
-##   gyros_arm_x (dbl), gyros_arm_y (dbl), gyros_arm_z (dbl), accel_arm_x
-##   (int), accel_arm_y (int), accel_arm_z (int), magnet_arm_x (int),
-##   magnet_arm_y (int), magnet_arm_z (int), roll_dumbbell (dbl),
-##   pitch_dumbbell (dbl), yaw_dumbbell (dbl), total_accel_dumbbell (int),
-##   gyros_dumbbell_x (dbl), gyros_dumbbell_y (dbl), gyros_dumbbell_z (dbl),
-##   accel_dumbbell_x (int), accel_dumbbell_y (int), accel_dumbbell_z (int),
-##   magnet_dumbbell_x (int), magnet_dumbbell_y (int), magnet_dumbbell_z
-##   (dbl), roll_forearm (dbl), pitch_forearm (dbl), yaw_forearm (dbl),
-##   total_accel_forearm (int), gyros_forearm_x (dbl), gyros_forearm_y (dbl),
-##   gyros_forearm_z (dbl), accel_forearm_x (int), accel_forearm_y (int),
-##   accel_forearm_z (int), magnet_forearm_x (int), magnet_forearm_y (dbl),
-##   magnet_forearm_z (dbl), classe (fctr), model1 (fctr), model2 (fctr),
-##   model3 (fctr), model4 (fctr), model5 (fctr), model6 (fctr)</code></pre>
-<pre><code>## Source: local data frame [2,880 x 61]
-## 
-##    user_name num_window roll_belt pitch_belt yaw_belt total_accel_belt
-##       (fctr)      (int)     (dbl)      (dbl)    (dbl)            (int)
-## 1   carlitos         12      1.48       8.15    -94.4                3
-## 2   carlitos         13      1.53       8.11    -94.4                3
-## 3   carlitos         13      1.55       8.09    -94.4                3
-## 4   carlitos         14      1.16       7.27    -94.1                3
-## 5   carlitos         14      1.18       7.26    -94.1                3
-## 6   carlitos         15      1.18       7.28    -94.1                3
-## 7   carlitos         15      1.09       7.31    -94.1                3
-## 8   carlitos         15      1.06       7.41    -94.1                3
-## 9   carlitos         15      1.03       7.49    -94.0                3
-## 10  carlitos         15      1.00       7.50    -94.1                3
-## ..       ...        ...       ...        ...      ...              ...
-## Variables not shown: gyros_belt_x (dbl), gyros_belt_y (dbl), gyros_belt_z
-##   (dbl), accel_belt_x (int), accel_belt_y (int), accel_belt_z (int),
-##   magnet_belt_x (int), magnet_belt_y (int), magnet_belt_z (int), roll_arm
-##   (dbl), pitch_arm (dbl), yaw_arm (dbl), total_accel_arm (int),
-##   gyros_arm_x (dbl), gyros_arm_y (dbl), gyros_arm_z (dbl), accel_arm_x
-##   (int), accel_arm_y (int), accel_arm_z (int), magnet_arm_x (int),
-##   magnet_arm_y (int), magnet_arm_z (int), roll_dumbbell (dbl),
-##   pitch_dumbbell (dbl), yaw_dumbbell (dbl), total_accel_dumbbell (int),
-##   gyros_dumbbell_x (dbl), gyros_dumbbell_y (dbl), gyros_dumbbell_z (dbl),
-##   accel_dumbbell_x (int), accel_dumbbell_y (int), accel_dumbbell_z (int),
-##   magnet_dumbbell_x (int), magnet_dumbbell_y (int), magnet_dumbbell_z
-##   (dbl), roll_forearm (dbl), pitch_forearm (dbl), yaw_forearm (dbl),
-##   total_accel_forearm (int), gyros_forearm_x (dbl), gyros_forearm_y (dbl),
-##   gyros_forearm_z (dbl), accel_forearm_x (int), accel_forearm_y (int),
-##   accel_forearm_z (int), magnet_forearm_x (int), magnet_forearm_y (dbl),
-##   magnet_forearm_z (dbl), classe (fctr), model1 (fctr), model2 (fctr),
-##   model3 (fctr), model4 (fctr), model5 (fctr), model6 (fctr)</code></pre>
-<pre><code>## Source: local data frame [20 x 60]
-## 
-##    user_name num_window roll_belt pitch_belt yaw_belt total_accel_belt
-##       (fctr)      (int)     (dbl)      (dbl)    (dbl)            (int)
-## 1      pedro         74    123.00      27.00    -4.75               20
-## 2     jeremy        431      1.02       4.87   -88.90                4
-## 3     jeremy        439      0.87       1.82   -88.50                5
-## 4     adelmo        194    125.00     -41.60   162.00               17
-## 5     eurico        235      1.35       3.33   -88.60                3
-## 6     jeremy        504     -5.92       1.59   -87.70                4
-## 7     jeremy        485      1.20       4.44   -87.30                4
-## 8     jeremy        440      0.43       4.15   -88.50                4
-## 9   carlitos        323      0.93       6.72   -93.70                4
-## 10   charles        664    114.00      22.40   -13.10               18
-## 11  carlitos        859      0.92       5.94   -92.70                3
-## 12    jeremy        461      1.01       4.96   -87.80                5
-## 13    eurico        257      0.54       2.45   -88.60                3
-## 14    jeremy        408      0.45       5.02   -87.90                5
-## 15    jeremy        779      5.34      -3.09   -80.30                4
-## 16    eurico        302      1.65       3.47   -87.00                2
-## 17     pedro         48    129.00      27.80     1.84               21
-## 18  carlitos        361      0.92       5.31   -93.10                3
-## 19     pedro         72    123.00      26.70    -2.68               19
-## 20    eurico        255      1.40       3.20   -88.70                3
-## Variables not shown: gyros_belt_x (dbl), gyros_belt_y (dbl), gyros_belt_z
-##   (dbl), accel_belt_x (int), accel_belt_y (int), accel_belt_z (int),
-##   magnet_belt_x (int), magnet_belt_y (int), magnet_belt_z (int), roll_arm
-##   (dbl), pitch_arm (dbl), yaw_arm (dbl), total_accel_arm (int),
-##   gyros_arm_x (dbl), gyros_arm_y (dbl), gyros_arm_z (dbl), accel_arm_x
-##   (int), accel_arm_y (int), accel_arm_z (int), magnet_arm_x (int),
-##   magnet_arm_y (int), magnet_arm_z (int), roll_dumbbell (dbl),
-##   pitch_dumbbell (dbl), yaw_dumbbell (dbl), total_accel_dumbbell (int),
-##   gyros_dumbbell_x (dbl), gyros_dumbbell_y (dbl), gyros_dumbbell_z (dbl),
-##   accel_dumbbell_x (int), accel_dumbbell_y (int), accel_dumbbell_z (int),
-##   magnet_dumbbell_x (int), magnet_dumbbell_y (int), magnet_dumbbell_z
-##   (int), roll_forearm (dbl), pitch_forearm (dbl), yaw_forearm (dbl),
-##   total_accel_forearm (int), gyros_forearm_x (dbl), gyros_forearm_y (dbl),
-##   gyros_forearm_z (dbl), accel_forearm_x (int), accel_forearm_y (int),
-##   accel_forearm_z (int), magnet_forearm_x (int), magnet_forearm_y (int),
-##   magnet_forearm_z (int), model1 (fctr), model2 (fctr), model3 (fctr),
-##   model4 (fctr), model5 (fctr), model6 (fctr)</code></pre>
-<pre><code>## Warning in gbm.fit(x = structure(c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, :
-## variable 3: model1D has no variation.</code></pre>
-<pre><code>## Warning in gbm.fit(x = structure(c(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, :
-## variable 15: model4D has no variation.</code></pre>
-<pre><code>##  [1] B A B A A E D B A A B C B A E E A B B B
-## Levels: A B C D E</code></pre>
+<pre class="r"><code>bind_cols(validation, pred_validation)
+bind_cols(testing, pred_test)
+bind_cols(submission_data, pred_submission)
+
+pred_validation$classe &lt;- validation$classe
+pred_test$classe &lt;- testing$classe
+pred_submission$classe &lt;- submission_data$classe
+
+# Fit a model that combines all models
+#train a new model on the predictions
+tControl_ensemble &lt;- trainControl(method='cv', number=3, returnResamp='none')
+fit_ensemble &lt;- train(classe~., data=pred_validation, method='gbm', trControl=tControl_ensemble, verbose=FALSE)
+pred_ensamble &lt;- predict(fit_ensemble,pred_test)
+pred_ensamble_submission &lt;- predict(fit_ensemble,pred_submission)
+
+accuracy &lt;- confusionMatrix(pred_test$classe, pred_ensamble)$overall[1]
+
+rmse &lt;- RMSE(as.numeric(pred_ensamble), as.numeric(pred_test$classe))
+
+pred_ensamble_submission</code></pre>
 </div>
 <div id="results-and-conclusion" class="section level2">
 <h2>Results and conclusion</h2>
-<p>After training the ensemble we calculate it’s accuracy and RMSE on the test data set. The accuracy is 0.997 and RMSE is 0.045. That is quite good, though the standalone <code>rf</code> model has a marginally higher accuracy, but that is expected when using model ensembles. The conclusion is that this model is quite good at predicting when the exercise was performed correctly or incorecctly.</p>
+<p>After training the ensemble we calculate it’s accuracy and RMSE on the test data set(out of sample). The accuracy out of sample is 0.997 and RMSE is 0.045. That is quite good, though the standalone <code>rf</code> model has a marginally higher accuracy, but that is expected when using model ensembles. The conclusion is that this model is quite good at predicting when the exercise was performed correctly or incorecctly.</p>
 </div>
 
 
